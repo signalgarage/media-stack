@@ -1,0 +1,85 @@
+# Lint, tests, compose validation and the privacy scans.
+# No job starts the stack, pulls or builds an app image, or downloads media:
+# `docker compose config` only parses and validates the compose files.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: ruff
+        run: |
+          pip install ruff
+          ruff check .
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck install.sh uninstall.sh scripts/*.sh scripts/gluetun/*.sh scripts/arr/*.sh tools/*.sh
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The host scripts must keep running on Python 3.9; the bot's container runs 3.12.
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest pyyaml
+      - run: pytest -q
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose files validate with the example settings (config only)
+        run: |
+          cp .env.example .env
+          docker compose config -q
+          COMPOSE_PROFILES=plex,monitoring,subtitles docker compose config -q
+          docker compose -f docker-compose.yml -f compose/test-no-vpn.override.yml config -q
+
+  scans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read   # gitleaks reads a pull request's commit list through the API
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # gitleaks scans the whole history
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: no blocking calls on the bot's event loop
+        run: python3 tools/block_scan.py moviebot/bot.py
+      - name: privacy scan
+        run: bash tools/privacy_scan.sh
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"   # read-only token: report in the job log, do not comment on PRs

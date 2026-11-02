@@ -1,0 +1,265 @@
+# media-stack containers. Every value comes from .env (install.sh writes it; .env.example
+# documents each setting). Optional services are switched on with COMPOSE_PROFILES in .env.
+#
+# Only qBittorrent sits behind the VPN: it shares gluetun's network namespace, so when the
+# tunnel is down it has no network at all (the kill switch). Everything else uses the normal
+# `media` bridge and reaches qBittorrent through the hostname "gluetun".
+#
+# One media bind for every app (${MEDIA_ROOT}:/data). Hardlinks only work inside one bind
+# mount of one filesystem, so there are deliberately no extra binds for the sub-folders.
+
+x-defaults: &defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-hardened: &hardened
+  <<: *defaults
+  security_opt:
+    - no-new-privileges:true
+
+x-lsio-env: &lsio-env
+  PUID: ${PUID:-1000}
+  PGID: ${PGID:-1000}
+  UMASK: ${UMASK:-002}
+  TZ: ${TZ}
+
+services:
+  gluetun:
+    <<: *defaults            # no no-new-privileges: it has to configure its own firewall and tunnel
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    networks:
+      - media
+    ports:
+      - "8080:8080"          # qBittorrent web UI (published here: qbittorrent has no ports of its own)
+      - "6881:6881"          # torrent traffic, TCP
+      - "6881:6881/udp"      # torrent traffic, UDP
+    volumes:
+      - ./config/gluetun:/gluetun
+      - ./scripts/gluetun/setport.sh:/scripts/setport.sh:ro
+    environment:
+      TZ: ${TZ}
+      VPN_SERVICE_PROVIDER: ${VPN_SERVICE_PROVIDER:-}
+      VPN_TYPE: ${VPN_TYPE:-wireguard}
+      WIREGUARD_PRIVATE_KEY: ${WIREGUARD_PRIVATE_KEY:-}
+      WIREGUARD_ADDRESSES: ${WIREGUARD_ADDRESSES:-}
+      WIREGUARD_PRESHARED_KEY: ${WIREGUARD_PRESHARED_KEY:-}
+      OPENVPN_USER: ${OPENVPN_USER:-}
+      OPENVPN_PASSWORD: ${OPENVPN_PASSWORD:-}
+      SERVER_COUNTRIES: ${SERVER_COUNTRIES:-}
+      VPN_PORT_FORWARDING: ${VPN_PORT_FORWARDING:-off}
+      PORT_FORWARD_ONLY: ${PORT_FORWARD_ONLY:-}
+      # gluetun replaces {{PORT}} with the forwarded port and runs this inside its container.
+      VPN_PORT_FORWARDING_UP_COMMAND: "/scripts/setport.sh {{PORT}}"
+      FIREWALL_OUTBOUND_SUBNETS: ${FIREWALL_OUTBOUND_SUBNETS:-}
+    # Health check: the one built into the image (qbittorrent waits for it).
+
+  qbittorrent:
+    <<: *hardened
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "service:gluetun"   # all traffic leaves through the VPN; no tunnel, no network
+    depends_on:
+      gluetun:
+        condition: service_healthy
+        restart: true                 # a restarted gluetun is a new namespace: rejoin it
+    environment:
+      <<: *lsio-env
+      WEBUI_PORT: "8080"
+      TORRENTING_PORT: "6881"
+    volumes:
+      - ./config/qbittorrent:/config
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data
+
+  radarr:
+    <<: *hardened
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    networks:
+      - media
+    ports:
+      - "7878:7878"
+    environment: *lsio-env
+    volumes:
+      - ./config/radarr:/config
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data
+      - ./scripts/arr:/scripts:ro     # the on-grab guard (Connect > Custom Script)
+
+  sonarr:
+    <<: *hardened
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    networks:
+      - media
+    ports:
+      - "8989:8989"
+    environment: *lsio-env
+    volumes:
+      - ./config/sonarr:/config
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data
+      - ./scripts/arr:/scripts:ro
+
+  prowlarr:
+    <<: *hardened
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    networks:
+      - media
+    ports:
+      - "9696:9696"
+    environment: *lsio-env
+    volumes:
+      - ./config/prowlarr:/config
+
+  flaresolverr:
+    <<: *hardened
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    shm_size: 1gb              # Chrome needs real shared memory or it hangs at launch
+    networks:
+      - media                  # internal only (port 8191): Prowlarr reaches it by name
+    environment:
+      LOG_LEVEL: info
+      TZ: ${TZ}
+
+  jellyseerr:
+    <<: *hardened
+    image: fallenbagel/jellyseerr:latest
+    container_name: jellyseerr
+    networks:
+      - media
+    ports:
+      - "5055:5055"
+    environment:
+      LOG_LEVEL: info
+      TZ: ${TZ}
+    volumes:
+      - ./config/jellyseerr:/app/config
+
+  moviebot:
+    <<: *hardened
+    build: ./moviebot
+    container_name: moviebot
+    # Same user as the host scripts: they share ./state (the bot answers and removes the
+    # confirmation files the guards write there).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    networks:
+      - media                  # webhook port is internal only: Radarr/Sonarr call it by name
+    depends_on:
+      - radarr
+      - sonarr
+    environment:
+      TZ: ${TZ}
+      STATE_DIR: /state
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      ALLOWED_TELEGRAM_USER_IDS: ${ALLOWED_TELEGRAM_USER_IDS:-}
+      ALLOWED_CHAT_IDS: ${ALLOWED_CHAT_IDS:-}
+      WEBHOOK_PORT: ${WEBHOOK_PORT:-8090}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      RADARR_URL: http://radarr:7878
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_URL: http://sonarr:8989
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      QBIT_URL: http://gluetun:8080
+      QBIT_USERNAME: ${QBIT_USERNAME:-admin}
+      QBIT_PASSWORD: ${QBIT_PASSWORD:-}
+      JELLYSEERR_URL: http://jellyseerr:5055
+      JELLYSEERR_API_KEY: ${JELLYSEERR_API_KEY:-}
+      PREFERRED_LANGUAGE: ${PREFERRED_LANGUAGE:-English}
+      REPORT_HOUR: ${REPORT_HOUR:-9}
+      NEW_RELEASES_HOUR: ${NEW_RELEASES_HOUR:-18}
+      NEW_RELEASES_REGIONS: ${NEW_RELEASES_REGIONS:-}
+      NEW_RELEASES_LANG_CAPS: ${NEW_RELEASES_LANG_CAPS:-en:5:3}
+      NEW_RELEASES_SERVICES: ${NEW_RELEASES_SERVICES:-all}
+      NEW_RELEASES_DAYS_MOVIES: ${NEW_RELEASES_DAYS_MOVIES:-90}
+      NEW_RELEASES_DAYS_TV: ${NEW_RELEASES_DAYS_TV:-45}
+      FILL_HOUR: ${FILL_HOUR:-7}
+      FILL_SEASONS_PER_DAY: ${FILL_SEASONS_PER_DAY:-4}
+      DEAD_MINUTES: ${DEAD_MINUTES:-30}
+      DISK_ALERT_PCT: ${DISK_ALERT_PCT:-80}
+      FALLBACK_GRACE_SEC: ${FALLBACK_GRACE_SEC:-300}
+      MOVIE_LIBRARIES: ${MOVIE_LIBRARIES:-}
+      DOWNLOADS_DIR: ${DOWNLOADS_DIR:-downloads}
+      MOVIES_DIR: ${MOVIES_DIR:-movies}
+      TV_DIR: ${TV_DIR:-tv}
+      EPISODE_CAP_GB: ${EPISODE_CAP_GB:-2.5}
+    volumes:
+      - ${STATE_DIR:-./state}:/state   # shared with the host scripts (confirmations, seen lists)
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data:ro
+
+  # ---- optional: COMPOSE_PROFILES=plex ---------------------------------------
+  plex:
+    <<: *hardened
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    profiles:
+      - plex
+    networks:
+      - media
+    ports:
+      - "32400:32400"
+    environment:
+      <<: *lsio-env
+      VERSION: docker
+      PLEX_CLAIM: ${PLEX_CLAIM:-}     # one-time code from plex.tv/claim, used on the first start only
+    volumes:
+      - ./config/plex:/config
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data:ro
+
+  # ---- optional: COMPOSE_PROFILES=monitoring ---------------------------------
+  uptime-kuma:
+    <<: *defaults            # no no-new-privileges: ping monitors rely on the ping binary's capability
+    image: louislam/uptime-kuma:2
+    container_name: uptime-kuma
+    profiles:
+      - monitoring
+    networks:
+      - media
+    ports:
+      - "3001:3001"
+    environment:
+      TZ: ${TZ}
+    volumes:
+      - ./config/uptime-kuma:/app/data
+
+  tautulli:
+    <<: *hardened
+    image: lscr.io/linuxserver/tautulli:latest
+    container_name: tautulli
+    profiles:
+      - monitoring
+    networks:
+      - media
+    ports:
+      - "8181:8181"
+    environment: *lsio-env
+    volumes:
+      - ./config/tautulli:/config
+
+  # ---- optional: COMPOSE_PROFILES=subtitles ----------------------------------
+  bazarr:
+    <<: *hardened
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    profiles:
+      - subtitles
+    networks:
+      - media
+    ports:
+      - "6767:6767"
+    environment: *lsio-env
+    volumes:
+      - ./config/bazarr:/config
+      - ${MEDIA_ROOT:?run ./install.sh first}:/data
+
+networks:
+  media:
+    driver: bridge

@@ -1,0 +1,19 @@
+# Tooling configuration only: media-stack is not a Python package and has nothing to install.
+# Host-side code (configure.py, scripts/, tools/) must run on Python 3.9 with the standard
+# library; the bot (moviebot/) runs in its own Python 3.12 container.
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+extend-exclude = ["config", "state", "logs", "backups"]
+
+# The bot is checked against the Python it actually runs on (needs ruff >= 0.10).
+[tool.ruff.per-file-target-version]
+"moviebot/**/*.py" = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts", "moviebot"]

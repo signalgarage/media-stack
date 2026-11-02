@@ -1,0 +1,27 @@
+## media-stack guard jobs. `python3 configure.py --only cron` (install.sh runs it too) copies
+## this file into your crontab between the media-stack markers, with the stack folder filled in.
+## To change a schedule, edit this file and run that command again: edits made inside the block
+## in the crontab itself are overwritten. Each job writes to logs/<job>.log.
+## Lines starting with ## stay here; #PROFILE:<name> lines are installed only with that profile.
+# Installed from scripts/cron.template by configure.py; edit that file, not these lines.
+*/10 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" regrab_guard
+25 */4 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" link_orphans
+*/5 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" vpn_watchdog
+7,37 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" verify_imports
+15 5 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" missing_sweep
+40 9 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" library_guard
+30 3 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" config_backup
+15 7 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" integrity_scan
+#PROFILE:subtitles 10 8 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" subtitle_sweep
+0 9 * * 1 /bin/bash "{{STACK}}/scripts/run_guard.sh" update_check
+0 11 * * 0 /bin/bash "{{STACK}}/scripts/run_guard.sh" restore_drill
+*/30 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" dead_torrent_reaper
+*/10 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" malware_guard
+*/2 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" mount_guard
+*/10 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" arr_health_guard
+*/10 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" size_cap_watch
+15 10 * * 0 /bin/bash "{{STACK}}/scripts/run_guard.sh" naming_guard
+# WARNING: the two space-saver jobs below RE-DOWNLOAD files you already own to save disk space.
+# They stay commented out unless SHRINK_ENABLED=true in .env; most people should leave them off.
+#SHRINK 0 6 * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" shrink_oversized
+#SHRINK 25 * * * * /bin/bash "{{STACK}}/scripts/run_guard.sh" resolve_shrink_imports

@@ -1,0 +1,31 @@
+# Secrets and per-install settings
+.env
+.env.*
+!.env.example
+*.conf
+*.ovpn
+*.key
+*.pem
+scripts/arr/arr.env
+
+# Runtime data written by the stack
+config/
+state/
+logs/
+backups/
+downloads/
+movies/
+tv/
+media/
+
+# Python and tooling
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Leftovers
+*.bak*
+*.log
+.DS_Store

@@ -1,0 +1,20 @@
+# TEST ONLY: for installer tests on a throwaway machine. Never use this for real downloading.
+#
+# `./install.sh --no-vpn` adds this file through COMPOSE_FILE in .env. It replaces gluetun with
+# a dummy container that only holds a network namespace, so qbittorrent still starts, shares
+# that namespace and is still reachable on the published ports, but its traffic goes straight
+# out of your normal internet connection: there is NO VPN and NO kill switch.
+#
+# Needs Docker Compose 2.24 or newer (for !reset).
+services:
+  gluetun:
+    image: alpine:3.20
+    command: ["sh", "-c", "sleep infinity"]
+    cap_add: !reset []
+    devices: !reset []
+    environment: !reset []
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 5s
+      timeout: 3s
+      retries: 1

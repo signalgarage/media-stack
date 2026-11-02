@@ -1,0 +1,5 @@
+# moviebot runtime dependencies (installed into the image by moviebot/Dockerfile).
+python-telegram-bot==22.*
+aiohttp>=3.9,<4
+requests>=2.31,<3
+tzdata
